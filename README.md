@@ -11,6 +11,11 @@ Plese see `original_README.md` or point to the original repo to setup the conda 
 
 Code coming soon! 
 
+## Dataset
+
+We have released two subsets of Visdial val set (mentioned in our paper) in the folder `released_datasets`: 
+1. VisdialConv - Instances which require dialog history verified by crowdsourced human annotations
+2. Vispro - Subset of Vispro and Visdial val set
 
 ## Citation
 
