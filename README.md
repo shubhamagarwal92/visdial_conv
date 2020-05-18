@@ -1,6 +1,6 @@
 ## visdial_conv
 
-This repository contains code used in our ACL'20 paper `History for Visual Dialog: Do we really need it?`
+This repository contains code used in our ACL'20 paper [History for Visual Dialog: Do we really need it?](https://arxiv.org/pdf/2005.07493.pdf)
 
 ## Credits
 
