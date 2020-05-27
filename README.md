@@ -7,6 +7,17 @@ This repository contains code used in our ACL'20 paper [History for Visual Dialo
 This repository is build upon [visdial-challenge-starter-pytorch](https://github.com/batra-mlp-lab/visdial-challenge-starter-pytorch). Previous commit history is maintained. We thank the challenge organizers for providing the starter code.  
 Plese see `original_README.md` or point to the original repo to setup the conda environment and download the relevant data.
 
+Alternatively, we provide [setup.sh](/setup_visdial/setup.sh) to streamline the process. We follow the directory structure
+
+```
+$PROJECT_DIR
+    |--$DATA_DIR==data 
+    |--$MODEL_DIR==models
+    |--$CODE_DIR==visdial_conv
+        |--$CONFIG_DIR==configs
+```
+
+
 ## Code
 
 Code coming soon! 
