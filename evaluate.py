@@ -1,13 +1,13 @@
 import argparse
 import json
 import os
-
+import numpy as np
 import torch
 from torch import nn
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 import yaml
-
+import pickle as pkl
 from visdialch.data.dataset import VisDialDataset
 from visdialch.encoders import Encoder
 from visdialch.decoders import Decoder
@@ -49,12 +49,49 @@ parser.add_argument(
     help="Path to VisDial v1.0 test data. This argument doesn't work when "
     "--split=val.",
 )
+parser.add_argument(
+    "--data_dir",
+    default="data/",
+    help="Path to data directory.",
+)
+
+# SA: if we want to use pre-trained embeddings.
+parser.add_argument(
+    "--use_pretrained_emb",
+    action="store_true",
+    help="If we want to use pre-trained embeddings such as BERT.",
+)
+
+parser.add_argument(
+    "--qa_emb_file_path",
+    default="/visdial_1.0_train_emb.h5",
+    help="Path to qa embeddings.",
+)
+
+parser.add_argument(
+    "--hist_emb_file_path",
+    default="visdial_1.0_test_emb.h5",
+    help="Path to hist embeddings.",
+)
+
 
 parser.add_argument_group("Evaluation related arguments")
 parser.add_argument(
     "--load-pthpath",
     default="checkpoints/checkpoint_xx.pth",
     help="Path to .pth file of pretrained checkpoint.",
+)
+parser.add_argument(
+    "--save-dirpath",
+    default="checkpoints/",
+    help="Path of directory to create checkpoint directory and save "
+    "checkpoints.",
+)
+
+parser.add_argument(
+    "--ignore_caption",
+    action="store_false",
+    help="If caption should be used as part of history"
 )
 
 parser.add_argument_group(
@@ -108,6 +145,15 @@ args = parser.parse_args()
 # keys: {"dataset", "model", "solver"}
 config = yaml.load(open(args.config_yml))
 
+# SA: Changing relative paths to absolute paths
+config["dataset"]["image_features_train_h5"] = "{}/{}".format(args.data_dir, config["dataset"]["image_features_train_h5"])
+config["dataset"]["image_features_val_h5"] = "{}/{}".format(args.data_dir, config["dataset"]["image_features_val_h5"])
+config["dataset"]["image_features_test_h5"] = "{}/{}".format(args.data_dir, config["dataset"]["image_features_test_h5"])
+config["dataset"]["word_counts_json"] = "{}/{}".format(args.data_dir, config["dataset"]["word_counts_json"])
+if "glove_npy" in config["dataset"]:
+    config["dataset"]["glove_npy"] = "{}/{}".format(args.data_dir, config["dataset"]["glove_npy"])
+
+
 if isinstance(args.gpu_ids, int):
     args.gpu_ids = [args.gpu_ids]
 device = (
@@ -116,11 +162,21 @@ device = (
     else torch.device("cpu")
 )
 
+print("Running on:", args.gpu_ids)
+print("First gpu id", args.gpu_ids[0])
+print("Verifying device", device)
+
+# SA: confirm this is working.
+# see: https://gist.github.com/shubhamagarwal92/8ecf839cf70c4990e3540d0bb4f288ff
+torch.cuda.set_device(device)
+
 # Print config and args.
 print(yaml.dump(config, default_flow_style=False))
 for arg in vars(args):
     print("{:<20}: {}".format(arg, getattr(args, arg)))
 
+pin_memory = config["solver"].get("pin_memory", True)
+print(f"Pin memory is set to {pin_memory}")
 
 # =============================================================================
 #   SETUP DATASET, DATALOADER, MODEL
@@ -131,30 +187,35 @@ if args.split == "val":
         config["dataset"],
         args.val_json,
         args.val_dense_json,
+        use_pretrained_emb=args.use_pretrained_emb,
         overfit=args.overfit,
         in_memory=args.in_memory,
+        use_caption=args.use_caption,
         return_options=True,
         add_boundary_toks=False
-        if config["model"]["decoder"] == "disc"
+        if config["model"]["decoder"] != "gen"
         else True,
     )
 else:
     val_dataset = VisDialDataset(
         config["dataset"],
         args.test_json,
+        use_pretrained_emb=args.use_pretrained_emb,
         overfit=args.overfit,
         in_memory=args.in_memory,
+        use_caption=args.ignore_caption,
         return_options=True,
         add_boundary_toks=False
-        if config["model"]["decoder"] == "disc"
+        if config["model"]["decoder"] != "gen"
         else True,
     )
 val_dataloader = DataLoader(
     val_dataset,
     batch_size=config["solver"]["batch_size"]
-    if config["model"]["decoder"] == "disc"
+    if config["model"]["decoder"] != "gen"
     else 5,
     num_workers=args.cpu_workers,
+    pin_memory=pin_memory
 )
 
 # Pass vocabulary to construct Embedding layer.
@@ -188,14 +249,30 @@ ndcg = NDCG()
 
 model.eval()
 ranks_json = []
+# SA: saving log probs for ensembling
+opt_log_probs = []
+batch_element_list = []
 
-for _, batch in enumerate(tqdm(val_dataloader)):
+for batch_num, batch in enumerate(tqdm(val_dataloader)):
     for key in batch:
         batch[key] = batch[key].to(device)
     with torch.no_grad():
         output = model(batch)
 
+    # output -> (bs, rounds, options)
     ranks = scores_to_ranks(output)
+
+    # SA: adding previous code here for ensembling
+    # if args.split == "test":
+        # SA: todo check if we need to append this - No
+        # opt_log_probs.append(output.cpu().numpy())
+        # SA: confirm if we need to view or already in this shape
+    log_softmax=nn.LogSoftmax(dim=-1)
+    softmax_probs = log_softmax(output)
+    log_probs = output.view(-1, 10, 100).cpu().numpy()
+    softmax_probs = softmax_probs.view(-1, 10, 100).cpu().numpy()
+    # print(log_probs.shape)
+
     for i in range(len(batch["img_ids"])):
         # Cast into types explicitly to ensure no errors in schema.
         # Round ids are 1-10, not 0-9
@@ -210,7 +287,11 @@ for _, batch in enumerate(tqdm(val_dataloader)):
                     ],
                 }
             )
+            # SA: adding previous code here for ensembling
+            opt_log_probs.append(list(log_probs[i][batch['num_rounds'][i] - 1]))
+
         else:
+            # SA: note todo all ranks are stored here..and not just for dense annotation
             for j in range(batch["num_rounds"][i]):
                 ranks_json.append(
                     {
@@ -219,14 +300,42 @@ for _, batch in enumerate(tqdm(val_dataloader)):
                         "ranks": [rank.item() for rank in ranks[i][j]],
                     }
                 )
-
+            # num_rounds will be 10 for val..however round_id is used for dense
+            # NOTE: careful - round_id -> 1-index
+            if "gt_relevance" in batch:
+                opt_log_probs.append(
+                    {
+                        "image_id": batch["img_ids"][i].item(),
+                        "round_id": int(batch["round_id"][i].item()),
+                        "log_probs": list(log_probs[i][batch['round_id'][i] - 1]),
+                        "softmax_probs": list(softmax_probs[i][batch['round_id'][i] - 1])
+                    }
+                )
+                # opt_log_probs.append(list(log_probs[i][batch['round_id'][i] - 1]))
     if args.split == "val":
+        # SA: saving batch element here
+        batch_element = {
+            "ans_ind": batch["ans_ind"].cpu().numpy(),
+            "round_id": batch["round_id"].cpu().numpy(),
+            "output": output.cpu().numpy()
+        }
+
         sparse_metrics.observe(output, batch["ans_ind"])
         if "gt_relevance" in batch:
             output = output[
                 torch.arange(output.size(0)), batch["round_id"] - 1, :
             ]
             ndcg.observe(output, batch["gt_relevance"])
+
+            # SA: saving batch element
+            batch_element["output_gt_relevance"] = output.cpu().numpy()
+            batch_element["gt_relevance"] = batch["gt_relevance"].cpu().numpy()
+            batch_element["img_ids"] = batch["img_ids"].cpu().numpy()
+
+        # SA: saving batch element here
+        batch_element_list.append(batch_element)
+
+print("Total batches considered: ", batch_num + 1)
 
 if args.split == "val":
     all_metrics = {}
@@ -238,3 +347,35 @@ if args.split == "val":
 print("Writing ranks to {}".format(args.save_ranks_path))
 os.makedirs(os.path.dirname(args.save_ranks_path), exist_ok=True)
 json.dump(ranks_json, open(args.save_ranks_path, "w"))
+
+
+# For test we save np array for ensembling,
+# for val the whole json as annotations --> for visualization
+path_opt_log_probs = os.path.splitext(args.save_ranks_path)[0].replace(
+    'ranks_', 'opt_log_probs_') + ".pkl"
+
+if args.split == "test":
+    opt_log_probs = np.array(opt_log_probs)
+    print(opt_log_probs.shape)
+
+with open(path_opt_log_probs, 'wb') as fp:
+    pkl.dump(opt_log_probs, fp)
+
+# TypeError: Object of type 'float32' is not JSON serializable
+# if args.split == "val":
+#     path_opt_log_probs = os.path.splitext(args.save_ranks_path)[0].replace(
+#         'ranks_', 'opt_log_probs_') + ".json"
+#     with open(path_opt_log_probs, 'w') as outfile:
+#         json.dump(opt_log_probs, outfile)
+
+
+print(f"Saving the output log probs to {path_opt_log_probs}")
+
+# To get oracle preds
+if args.split == "val":
+    # SA: save option log probs -> change file path from ranks to opt_log_probs
+    path_batch_element = os.path.splitext(args.save_ranks_path)[0].replace(
+        'ranks_', 'batch_element_') + ".pkl"
+    print(f"Saving the output and batch to {path_batch_element}")
+    with open(path_batch_element, 'wb') as fp:
+        pkl.dump(batch_element_list, fp)
