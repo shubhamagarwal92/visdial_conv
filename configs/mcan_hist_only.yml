@@ -1,0 +1,44 @@
+# Dataset reader arguments
+dataset:
+  image_features_train_h5: '/features_faster_rcnn_x101_train.h5'
+  image_features_val_h5: '/features_faster_rcnn_x101_val.h5'
+  image_features_test_h5: '/features_faster_rcnn_x101_test.h5'
+  word_counts_json: '/visdial_1.0_word_counts_train.json'
+  glove_npy: '/glove.npy'
+
+  img_norm: 1
+  concat_history: true
+  max_sequence_length: 20
+  vocab_min_count: 5
+
+
+# Model related arguments
+model:
+  encoder: 'mcan_hist_only'
+  decoder: 'disc'
+
+  use_hist: true
+  use_bert: false
+
+  img_feature_size: 2048
+  word_embedding_size: 300
+  bert_embedding_size: 768
+  lstm_hidden_size: 512
+  lstm_num_layers: 1
+  dropout: 0.2
+
+
+# Optimization related arguments
+solver:
+  batch_size: 32 # 32 x num_gpus is a good rule of thumb
+  num_epochs: 14
+  num_epochs_curriculum: 2
+  initial_lr: 0.0005
+  initial_lr_curriculum: 0.0001
+  training_splits: "train"  # "trainval"
+  lr_gamma: 0.2
+  lr_milestones: # epochs when lr => lr * lr_gamma
+    - 7
+    - 10
+  warmup_factor: 0.2
+  warmup_epochs: 1

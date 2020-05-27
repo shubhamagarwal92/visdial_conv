@@ -26,7 +26,7 @@ wheels/
 MANIFEST
 
 # Datasets, pretrained models, checkpoints and preprocessed files
-data/
+# data/  SA: removing data from gitignore
 !visdialch/data/
 checkpoints/
 logs/
@@ -39,3 +39,5 @@ venv/
 ENV/
 
 .idea/
+._.DS_Store
+.DS_Store
