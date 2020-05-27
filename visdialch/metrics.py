@@ -95,13 +95,18 @@ class SparseGTMetrics(object):
 
 
 class NDCG(object):
-    def __init__(self):
+    def __init__(self, is_direct_ranks=False):
+        """
+
+        :param is_direct_ranks: If we pass directly ranks instead of scores in observe
+        """
         self._ndcg_numerator = 0.0
         self._ndcg_denominator = 0.0
+        self.is_direct_ranks = is_direct_ranks
 
-    def observe(
-        self, predicted_scores: torch.Tensor, target_relevance: torch.Tensor
-    ):
+    def observe(self, predicted_scores: torch.Tensor,
+                target_relevance: torch.Tensor):
+        # predicted_ranks: torch.Tensor = None
         """
         Observe model output scores and target ground truth relevance and
         accumulate NDCG metric.
@@ -115,14 +120,22 @@ class NDCG(object):
             A tensor of shape same as predicted scores, indicating ground truth
             relevance of each answer option for a particular round.
         """
-        predicted_scores = predicted_scores.detach()
+        if not self.is_direct_ranks:
+            predicted_scores = predicted_scores.detach()
 
-        # shape: (batch_size, 1, num_options)
-        predicted_scores = predicted_scores.unsqueeze(1)
-        predicted_ranks = scores_to_ranks(predicted_scores)
+            # shape: (batch_size, 1, num_options)
+            predicted_scores = predicted_scores.unsqueeze(1)
+            predicted_ranks = scores_to_ranks(predicted_scores)
 
-        # shape: (batch_size, num_options)
-        predicted_ranks = predicted_ranks.squeeze()
+            # shape: (batch_size, num_options)
+            # predicted_ranks = predicted_ranks.squeeze(1)
+            predicted_ranks = predicted_ranks.squeeze(1)
+        else:
+            # SA: Now ranks are passed instead of scores.
+            # Kind of dirty way to make things work.
+            assert len(predicted_scores.size()) == 2  # (bs, num_options)
+            predicted_ranks = predicted_scores  # these are already ranks
+
         batch_size, num_options = predicted_ranks.size()
 
         k = torch.sum(target_relevance != 0, dim=-1)
@@ -154,6 +167,7 @@ class NDCG(object):
     def _dcg(self, rankings: torch.Tensor, relevance: torch.Tensor):
         sorted_relevance = relevance[rankings].cpu().float()
         discounts = torch.log2(torch.arange(len(rankings)).float() + 2)
+        # log2(i+1) # to cater 0-indexing add extra 1  --> log1(i+2)
         return torch.sum(sorted_relevance / discounts, dim=-1)
 
     def retrieve(self, reset: bool = True):
