@@ -36,7 +36,7 @@ model:
 
 # Optimization related arguments
 solver:
-  batch_size: 4 # 32 x num_gpus is a good rule of thumb
+  batch_size: 32 # 32 x num_gpus is a good rule of thumb
   num_epochs: 15
   num_epochs_curriculum: 2
   initial_lr: 0.0005
