@@ -24,7 +24,7 @@ import h5py
 # `DialogsReader`.
 from nltk.tokenize import word_tokenize
 from tqdm import tqdm
-
+import pickle as pkl
 
 class DialogsReader(object):
     """
@@ -45,11 +45,13 @@ class DialogsReader(object):
         dialogs_jsonpath: str,
         num_examples: Optional[int] = None,
         num_workers: int = 1,
+        use_pretrained_emb: bool = False
     ):
         with open(dialogs_jsonpath, "r") as visdial_file:
             visdial_data = json.load(visdial_file)
             self._split = visdial_data["split"]
-
+            # SA: pre-trained embeddings
+            self.use_pretrained_emb = use_pretrained_emb
             # Maintain questions and answers as a dict instead of list because
             # they are referenced by index in dialogs. We drop elements from
             # these in "overfit" mode to save time (tokenization is slow).
@@ -71,6 +73,7 @@ class DialogsReader(object):
             self.captions: Dict[int, Any] = {}
             self.dialogs: Dict[int, Any] = {}
             self.num_rounds: Dict[int, Any] = {}
+            self.original_indices: Dict[int, Any] = {}
 
             all_dialogs = visdial_data["data"]["dialogs"]
 
@@ -78,9 +81,13 @@ class DialogsReader(object):
             if num_examples is not None:
                 all_dialogs = all_dialogs[:num_examples]
 
+            index = 0
             for _dialog in all_dialogs:
 
                 self.captions[_dialog["image_id"]] = _dialog["caption"]
+                self.original_indices[_dialog["image_id"]] = index
+                index += 1
+
 
                 # Record original length of dialog, before padding.
                 # 10 for train and val splits, 10 or less for test split.
@@ -124,35 +131,10 @@ class DialogsReader(object):
                     i: self.answers[i] for i in answers_included
                 }
 
-            self._multiprocess_tokenize(num_workers)
-
-    def _multiprocess_tokenize(self, num_workers: int):
-        """
-        Tokenize captions, questions and answers in parallel processes. This
-        method uses multiprocessing module internally.
-
-        Since questions, answers and captions are dicts - and multiprocessing
-        map utilities operate on lists, we convert these to lists first and
-        then back to dicts.
-
-        Parameters
-        ----------
-        num_workers: int
-            Number of workers (processes) to run in parallel.
-        """
-
-        # While displaying progress bar through tqdm, specify total number of
-        # sequences to tokenize, because tqdm won't know in case of pool.imap
-        with mp.Pool(num_workers) as pool:
             print(f"[{self._split}] Tokenizing questions...")
             _question_tuples = self.questions.items()
             _question_indices = [t[0] for t in _question_tuples]
-            _questions = list(
-                tqdm(
-                    pool.imap(word_tokenize, [t[1] for t in _question_tuples]),
-                    total=len(self.questions)
-                )
-            )
+            _questions = list(tqdm(map(word_tokenize, [t[1] for t in _question_tuples])))
             self.questions = {
                 i: question + ["?"] for i, question in
                 zip(_question_indices, _questions)
@@ -163,29 +145,19 @@ class DialogsReader(object):
             print(f"[{self._split}] Tokenizing answers...")
             _answer_tuples = self.answers.items()
             _answer_indices = [t[0] for t in _answer_tuples]
-            _answers = list(
-                tqdm(
-                    pool.imap(word_tokenize, [t[1] for t in _answer_tuples]),
-                    total=len(self.answers)
-                )
-            )
+            _answers = list(tqdm(map(word_tokenize, [t[1] for t in _answer_tuples])))
+            # SA: adding "." instead of "?"
             self.answers = {
-                i: answer + ["?"] for i, answer in
+                i: answer for i, answer in
                 zip(_answer_indices, _answers)
             }
-            # Delete variables to free memory.
             del _answer_tuples, _answer_indices, _answers
 
             print(f"[{self._split}] Tokenizing captions...")
             # Convert dict to separate lists of image_ids and captions.
             _caption_tuples = self.captions.items()
             _image_ids = [t[0] for t in _caption_tuples]
-            _captions = list(
-                tqdm(
-                    pool.imap(word_tokenize, [t[1] for t in _caption_tuples]),
-                    total=(len(_caption_tuples))
-                )
-            )
+            _captions = list(tqdm(map(word_tokenize, [t[1] for t in _caption_tuples])))
             # Convert tokenized captions back to a dict.
             self.captions = {i: c for i, c in zip(_image_ids, _captions)}
 
@@ -194,7 +166,12 @@ class DialogsReader(object):
 
     def __getitem__(self, image_id: int) -> Dict[str, Union[int, str, List]]:
         caption_for_image = self.captions[image_id]
+        original_index = self.original_indices[image_id]
         dialog = copy.copy(self.dialogs[image_id])
+        # SA: added dialog index here
+        if self.use_pretrained_emb:
+            # Copy the dialog before converting to raw tokens
+            dialog_with_index = copy.deepcopy(self.dialogs[image_id])
         num_rounds = self.num_rounds[image_id]
 
         # Replace question and answer indices with actual word tokens.
@@ -212,12 +189,18 @@ class DialogsReader(object):
                     answer_option
                 ]
 
-        return {
+        visdial_instance = {
             "image_id": image_id,
             "caption": caption_for_image,
             "dialog": dialog,
-            "num_rounds": num_rounds,
-        }
+            "num_rounds": num_rounds}
+
+        # SA: we need integers to access the embeddings from the h5 files
+        if self.use_pretrained_emb:
+            visdial_instance["dialog_with_index"] = dialog_with_index
+            visdial_instance["original_index"] = original_index
+
+        return visdial_instance
 
     def keys(self) -> List[int]:
         return list(self.dialogs.keys())
@@ -253,10 +236,81 @@ class DenseAnnotationsReader(object):
         # keys: {"image_id", "round_id", "gt_relevance"}
         return self._visdial_data[index]
 
+    # SA: adding these APIs to get image indices for finetuning
+    @property
+    def all_data(self):
+        return self._visdial_data
+
+    # @property
+    # def meta_dic(self) -> List:
+    #     return self._meta_dic
+
+    @property
+    def keys(self) -> List[int]:
+        return self._image_ids
+
+
     @property
     def split(self):
         # always
         return "val"
+
+class AugmentedDenseAnnotationsReader(object):
+    """
+    A reader for dense annotations for val split. The json file must have the
+    same structure as mentioned on ``https://visualdialog.org/data``.
+
+    Parameters
+    ----------
+    dense_annotations_jsonpath : str
+        Path to a json file containing VisDial v1.0
+    """
+
+    def __init__(self, dense_annotations_jsonpath: str,
+                 split: str = "train"):
+        self._split = split
+        with open(dense_annotations_jsonpath, "r") as visdial_file:
+            self._visdial_data = json.load(visdial_file)
+            self._image_ids = [
+                entry["image_id"] for entry in self._visdial_data
+            ]
+
+    def __len__(self):
+        return len(self._image_ids)
+
+    def __getitem__(self, image_id: int) -> Dict[str, Union[int, List]]:
+        index = self._image_ids.index(image_id)
+        dial_image_annotation = self._visdial_data[index]["dense_annotation"]
+
+        # dial_image_annotation = self._visdial_data[image_id]["dense_annotation"]
+        dial_annotation_list = []
+        for round in range(len(dial_image_annotation)):
+            # if self.split == "train": Always train
+            dial_annotation_list.append(dial_image_annotation[round]["relevance"])
+        # keys: {"image_id", "round_id", "gt_relevance"}
+        return_dic = {
+            "augmented_gt_relevance": dial_annotation_list
+        }
+        return return_dic
+
+    # SA: adding these APIs to get image indices for finetuning
+    @property
+    def all_data(self):
+        return self._visdial_data
+
+    # @property
+    # def meta_dic(self) -> List:
+    #     return self._meta_dic
+
+    @property
+    def keys(self) -> List[int]:
+        return self._image_ids
+
+
+    @property
+    def split(self):
+        # always
+        return self._split
 
 
 class ImageFeaturesHdfReader(object):
@@ -320,6 +374,432 @@ class ImageFeaturesHdfReader(object):
 
     def keys(self) -> List[int]:
         return self._image_id_list
+
+    @property
+    def split(self):
+        return self._split
+
+
+class TransformerEmbeddingsHdfReader(object):
+    """
+    Same format as ImageFeaturesHdfReader.
+
+
+    """
+    def __init__(self, embedding_path: str,
+                 in_memory: bool = False):
+        self.embedding_path = embedding_path
+        self._in_memory = in_memory
+
+        with h5py.File(self.embedding_path, "r") as embedding_hdf:
+            self._split = embedding_hdf.attrs["split"]
+            self._image_id_list = list(embedding_hdf["image_id"])
+            # "features" is List[np.ndarray] if the dataset is loaded in-memory
+            # If not loaded in memory, then list of None.
+            self.ques_embeddings = [None] * len(self._image_id_list)
+            self.hist_embeddings = [None] * len(self._image_id_list)
+            self.opts_embeddings = [None] * len(self._image_id_list)
+
+    def __len__(self):
+        return len(self._image_ids)
+
+    ## SA: todo check the return typing
+    def __getitem__(self, image_id: int): # -> Dict[str, Union[int, List]]:
+        index = self._image_id_list.index(image_id)
+        if self._in_memory:
+            # Load features during first epoch, all not loaded together as it
+            # has a slow start.
+            ## SA: check by ques_embeddings only. if it is there..all would be there!
+            if self.ques_embeddings[index] is not None:
+                ques_embeddings = self.ques_embeddings[index]
+                hist_embeddings = self.hist_embeddings[index]
+                opts_embeddings = self.opts_embeddings[index]
+            else:
+                with h5py.File(self.embedding_path, "r") as features_hdf:
+                    ques_embeddings = features_hdf["ques_embeddings"][index]
+                    hist_embeddings = features_hdf["hist_embeddings"][index]
+                    opts_embeddings = features_hdf["opts_embeddings"][index]
+                    self.ques_embeddings[index] = ques_embeddings
+                    self.hist_embeddings[index] = hist_embeddings
+                    self.opts_embeddings[index] = opts_embeddings
+        else:
+            # Read chunk from file everytime if not loaded in memory.
+            with h5py.File(self.embedding_path, "r") as features_hdf:
+
+                ques_embeddings = features_hdf["ques_embeddings"][index]
+                hist_embeddings = features_hdf["hist_embeddings"][index]
+                opts_embeddings = features_hdf["opts_embeddings"][index]
+
+        embeddings = {"ques_embeddings": ques_embeddings,
+                      "hist_embeddings": hist_embeddings,
+                      "opts_embeddings": opts_embeddings}
+
+        return embeddings
+
+    def keys(self) -> List[int]:
+        return self._image_id_list
+
+    @property
+    def split(self):
+        # always
+        return self._split
+
+
+class QuesEmbeddingsHdfReader(object):
+    """
+    Same format as ImageFeaturesHdfReader.
+
+
+    """
+    def __init__(self, qa_emb_file_path: str,
+                 in_memory: bool = False):
+        """
+
+        :param qa_emb_file_path: QA file path
+        :param q_len: Number of questions
+        :param a_len: Number of answers
+        :param in_memory:
+        """
+
+        self.qa_emb_file_path = qa_emb_file_path
+        self._in_memory = in_memory
+        ## SA: trying to load everything
+        if self._in_memory:
+            with h5py.File(self.qa_emb_file_path, "r") as qa_embedding_hdf:
+                self.ques_embeddings = qa_embedding_hdf["ques_embeddings"][:]
+                print("All embedding loaded for questions: ", len(self.ques_embeddings))
+                self.q_len = len(self.ques_embeddings)
+        else:
+            # SA:
+            print("Loading the file only. Not reading in memory")
+            with h5py.File(self.qa_emb_file_path, "r") as qa_embedding_hdf:
+                self._split = qa_embedding_hdf.attrs["split"]
+
+                # SA: todo check if we can do len or shape
+                self.q_len = len(qa_embedding_hdf["ques_embeddings"])
+                # "features" is List[np.ndarray] if the dataset is loaded in-memory
+                # If not loaded in memory, then list of None.
+                self.ques_embeddings = [None] * self.q_len
+
+    # @todo What should be the length??
+    def __len__(self):
+        return len(self.q_len)
+
+    ## SA: todo check the return typing
+    def __getitem__(self,
+                    q_index: int): # -> Dict[str, Union[int, List]]:
+        if self._in_memory:
+            # Load features during first epoch, all not loaded together as it
+            # has a slow start.
+            ## SA: check by ques_embeddings only. if it is there..all would be there!
+            if self.ques_embeddings[q_index] is not None:
+                ques_embeddings = self.ques_embeddings[q_index]
+            else:
+                with h5py.File(self.qa_emb_file_path, "r") as features_hdf:
+                    ques_embeddings = features_hdf["ques_embeddings"][q_index]
+                    # Store in memory
+                    self.ques_embeddings[q_index] = ques_embeddings
+        else:
+            # Read chunk from file everytime if not loaded in memory.
+            with h5py.File(self.qa_emb_file_path, "r") as features_hdf:
+                ques_embeddings = features_hdf["ques_embeddings"][q_index]
+
+        # embeddings = {"ques_embeddings": ques_embeddings,
+        #               "ans_embeddings": ans_embeddings}
+
+        return ques_embeddings
+
+    # @todo: what should be here? -- index is actually the key
+    def keys(self) -> List[int]:
+        return list(range(self.q_len))
+
+    @property
+    def split(self):
+        # always
+        return self._split
+
+
+class AnswerEmbeddingsHdfReader(object):
+    """
+    Same format as ImageFeaturesHdfReader.
+
+
+    """
+    def __init__(self, qa_emb_file_path: str,
+                 in_memory: bool = False):
+        """
+
+        :param qa_emb_file_path: QA file path
+        :param q_len: Number of questions
+        :param a_len: Number of answers
+        :param in_memory:
+        """
+
+        self.qa_emb_file_path = qa_emb_file_path
+        self._in_memory = in_memory
+
+        ## SA: trying to load everything
+        if self._in_memory:
+            with h5py.File(self.qa_emb_file_path, "r") as qa_embedding_hdf:
+                self.ans_embeddings = qa_embedding_hdf["ans_embeddings"][:]
+                print("All embedding loaded for answers", len(self.ans_embeddings))
+                self.a_len = len(self.ans_embeddings)
+        else:
+            print("Loading the file only. Not reading in memory")
+            with h5py.File(self.qa_emb_file_path, "r") as qa_embedding_hdf:
+                self._split = qa_embedding_hdf.attrs["split"]
+                # SA: todo check if we can do len or shape
+                self.a_len = len(qa_embedding_hdf["ans_embeddings"])
+                # "features" is List[np.ndarray] if the dataset is loaded in-memory
+                # If not loaded in memory, then list of None.
+                self.ans_embeddings = [None] * self.a_len
+
+    # @todo What should be the length??
+    def __len__(self):
+        return len(self.a_len)
+
+
+    ## SA: todo check the return typing
+    def __getitem__(self,
+                    a_index: int): # -> Dict[str, Union[int, List]]:
+        if self._in_memory:
+            # Load features during first epoch, all not loaded together as it
+            # has a slow start.
+            ## SA: check by ques_embeddings only. if it is there..all would be there!
+            if self.ans_embeddings[a_index] is not None:
+                ans_embeddings = self.ans_embeddings[a_index]
+            else:
+                with h5py.File(self.qa_emb_file_path, "r") as features_hdf:
+                    ans_embeddings = features_hdf["ans_embeddings"][a_index]
+                    # Store in memory
+                    self.ans_embeddings[a_index] = ans_embeddings
+        else:
+            # Read chunk from file everytime if not loaded in memory.
+            with h5py.File(self.qa_emb_file_path, "r") as features_hdf:
+                ans_embeddings = features_hdf["ans_embeddings"][a_index]
+
+        # embeddings = {"ques_embeddings": ques_embeddings,
+        #               "ans_embeddings": ans_embeddings}
+
+        return ans_embeddings
+
+    # @todo: what should be here?
+    def keys(self) -> List[int]:
+        return list(range(self.a_len))
+
+    @property
+    def split(self):
+        # always
+        return self._split
+
+# SA: Index here should refer to the actual dialog index while we are indexing by image id
+class CaptionEmbeddingsHdfReader(object):
+    """
+    Same format as ImageFeaturesHdfReader.
+
+    """
+    def __init__(self, qa_emb_file_path: str,
+                 in_memory: bool = False):
+        """
+
+        :param qa_emb_file_path: QA file path
+        :param q_len: Number of questions
+        :param a_len: Number of answers
+        :param in_memory:
+        """
+
+        self.qa_emb_file_path = qa_emb_file_path
+        self._in_memory = in_memory
+
+        ## SA: trying to load everything
+        if self._in_memory:
+            with h5py.File(self.qa_emb_file_path, "r") as qa_embedding_hdf:
+                self.captions_embeddings = qa_embedding_hdf["captions_embeddings"][:]
+                print("All embedding loaded for answers", len(self.captions_embeddings))
+                self.cap_len = len(self.captions_embeddings)
+        else:
+            print("Loading the file only. Not reading in memory")
+            with h5py.File(self.qa_emb_file_path, "r") as qa_embedding_hdf:
+                self._split = qa_embedding_hdf.attrs["split"]
+                # SA: todo check if we can do len or shape
+                self.cap_len = len(qa_embedding_hdf["captions_embeddings"])
+                # "features" is List[np.ndarray] if the dataset is loaded in-memory
+                # If not loaded in memory, then list of None.
+                self.captions_embeddings = [None] * self.cap_len
+
+        # with h5py.File(self.qa_emb_file_path, "r") as qa_embedding_hdf:
+        #     self._split = qa_embedding_hdf.attrs["split"]
+        #     # SA: todo check if we can do len or shape
+        #     self.cap_len = len(qa_embedding_hdf["captions_embeddings"])
+        #     # "features" is List[np.ndarray] if the dataset is loaded in-memory
+        #     # If not loaded in memory, then list of None.
+        #     self.caption_embeddings = [None] * self.cap_len
+
+    def __len__(self):
+        return len(self.cap_len)
+
+    def __getitem__(self,
+                    index: int):  # -> Dict[str, Union[int, List]]:
+        if self._in_memory:
+            # Load features during first epoch, all not loaded together as it
+            # has a slow start.
+            ## SA: check by ques_embeddings only. if it is there..all would be there!
+            if self.captions_embeddings[index] is not None:
+                captions_embeddings = self.captions_embeddings[index]
+            else:
+                with h5py.File(self.qa_emb_file_path, "r") as features_hdf:
+                    captions_embeddings = features_hdf["captions_embeddings"][index]
+                    # Store in memory
+                    self.captions_embeddings[index] = captions_embeddings
+        else:
+            # Read chunk from file everytime if not loaded in memory.
+            with h5py.File(self.qa_emb_file_path, "r") as features_hdf:
+                captions_embeddings = features_hdf["captions_embeddings"][index]
+
+        return captions_embeddings
+
+    # @todo: what should be here?
+    def keys(self) -> List[int]:
+        return list(range(self.cap_len))
+
+    @property
+    def split(self):
+        # always
+        return self._split
+
+
+class HistEmbeddingsHdfReader(object):
+    """
+    General HDF5 reader
+    """
+    def __init__(self, emb_file_path: str,
+                 hdfs_key: str, in_memory: bool = False):
+        """
+
+        :param emb_file_path:
+        :param key: hdfs key
+        :param in_memory:
+        """
+
+        self.emb_file_path = emb_file_path
+        self._in_memory = in_memory
+        self.hdfs_key = hdfs_key
+
+        # SA: todo `img_ids` key would change
+        ## SA: trying to load everything
+        if self._in_memory:
+            with h5py.File(self.emb_file_path, "r") as embedding_hdf:
+                self.all_embeddings = embedding_hdf[self.hdfs_key][:]
+                self._image_id_list = list(embedding_hdf["img_ids"])
+                print(f"All embedding loaded for {self.hdfs_key}", len(self.all_embeddings))
+                self.all_len = len(self.all_embeddings)
+        else:
+            print("Loading the file only. Not reading in memory")
+            with h5py.File(self.emb_file_path, "r") as embedding_hdf:
+                self._split = embedding_hdf.attrs["split"]
+                # SA: todo check if we can do len or shape
+                self.all_len = len(embedding_hdf[self.hdfs_key])
+
+                print(embedding_hdf.keys())
+                self._image_id_list = list(embedding_hdf["img_ids"])
+                # "features" is List[np.ndarray] if the dataset is loaded in-memory
+                # If not loaded in memory, then list of None.
+                self.all_embeddings = [None] * self.all_len
+
+    def __len__(self):
+        return len(self.all_len)
+
+
+    # SA: todo check the return typing
+    def __getitem__(self,
+                    image_id: int):  # -> np.array:
+        _index = self._image_id_list.index(image_id)
+        if self._in_memory:
+            # Load features during first epoch, all not loaded together as it
+            # has a slow start.
+            if self.all_embeddings[_index] is not None:
+                _embeddings = self.all_embeddings[_index]
+            else:
+                with h5py.File(self.emb_file_path, "r") as embedding_hdf:
+                    _embeddings = embedding_hdf[self.hdfs_key][_index]
+                    # Store in memory
+                    self.all_embeddings[_index] = _embeddings
+        else:
+            # Read chunk from file everytime if not loaded in memory.
+            with h5py.File(self.emb_file_path, "r") as embedding_hdf:
+                _embeddings = embedding_hdf[self.hdfs_key][_index]
+
+        return _embeddings
+
+    def keys(self) -> List[int]:
+        return list(range(self.all_len))
+
+    @property
+    def split(self):
+        return self._split
+
+
+
+class EmbeddingsHdfReader(object):
+    """
+    General HDF5 reader
+    """
+    def __init__(self, emb_file_path: str,
+                 hdfs_key: str, in_memory: bool = False):
+        """
+
+        :param emb_file_path:
+        :param key: hdfs key
+        :param in_memory:
+        """
+
+        self.emb_file_path = emb_file_path
+        self._in_memory = in_memory
+        self.hdfs_key = hdfs_key
+
+        ## SA: trying to load everything
+        if self._in_memory:
+            with h5py.File(self.emb_file_path, "r") as embedding_hdf:
+                self.all_embeddings = embedding_hdf[self.hdfs_key][:]
+                print(f"All embedding loaded for {self.hdfs_key}", len(self.all_embeddings))
+                self.all_len = len(self.all_embeddings)
+        else:
+            print("Loading the file only. Not reading in memory")
+            with h5py.File(self.emb_file_path, "r") as embedding_hdf:
+                self._split = embedding_hdf.attrs["split"]
+                # SA: todo check if we can do len or shape
+                self.all_len = len(embedding_hdf[self.hdfs_key])
+                # "features" is List[np.ndarray] if the dataset is loaded in-memory
+                # If not loaded in memory, then list of None.
+                self.all_embeddings = [None] * self.all_len
+
+    def __len__(self):
+        return len(self.all_len)
+
+
+    # SA: todo check the return typing
+    def __getitem__(self,
+                    _index: int):  # -> np.array:
+
+        if self._in_memory:
+            # Load features during first epoch, all not loaded together as it
+            # has a slow start.
+            if self.all_embeddings[_index] is not None:
+                _embeddings = self.all_embeddings[_index]
+            else:
+                with h5py.File(self.emb_file_path, "r") as embedding_hdf:
+                    _embeddings = embedding_hdf[self.hdfs_key][_index]
+                    # Store in memory
+                    self.all_embeddings[_index] = _embeddings
+        else:
+            # Read chunk from file everytime if not loaded in memory.
+            with h5py.File(self.emb_file_path, "r") as embedding_hdf:
+                _embeddings = embedding_hdf[self.hdfs_key][_index]
+
+        return _embeddings
+
+    def keys(self) -> List[int]:
+        return list(range(self.all_len))
 
     @property
     def split(self):
