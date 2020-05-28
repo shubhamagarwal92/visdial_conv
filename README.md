@@ -65,16 +65,17 @@ Be careful about different indexing in the data. See [notes.txt](./notes.txt)
 
 ## Dataset
 
-We have released two subsets of Visdial val set (mentioned in our paper) in the folder `released_datasets`: 
+We have released two subsets of Visdial val set (mentioned in our paper) in the folder [released_datasets](./released_datasets): 
 1. VisdialConv - Instances which require dialog history verified by crowdsourced human annotations
-2. Vispro - Subset of Vispro and Visdial val set
+2. Vispro - Intersection of Vispro and Visdial val set
 
 To evaluate on these subsets, use the shell scripts provided in [evaluate_subset_data](./evaluate_subset_data).
 
 We used the scripts in [subset_dialog_data](./subset_dialog_data) to create these subsets from VisdialVal set.
 
-
 If you are interested in our AMT interface, please refer to the [repository](https://github.com/shubhamagarwal92/visdialconv-amt).
+
+See the [README](./released_datasets/visdialconv/README.md) in the visdialconv folder to know more about the annotations. 
 
 ## Citation
 
