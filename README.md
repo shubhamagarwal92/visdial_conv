@@ -1,5 +1,8 @@
 ## visdial_conv
 
+[![Paper](https://img.shields.io/badge/Presented%20at%20-ACL2020-yellow)](https://acl2020.org/program/accepted/)
+[![CodeAMT](https://img.shields.io/badge/code-AMT%20interface-green.svg)](https://github.com/shubhamagarwal92/visdialconv-amt)
+
 This repository contains code used in our ACL'20 paper [History for Visual Dialog: Do we really need it?](https://arxiv.org/pdf/2005.07493.pdf)
 
 ## Credits
@@ -91,4 +94,4 @@ If you use this work, please cite it as
 
 Feel free to fork and contribute to this work. Please raise a PR or any related issues. Will be happy to help. Thanks.
 
-
+Badges made using [shields.io](https://shields.io/)
