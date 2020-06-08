@@ -1,4 +1,4 @@
-## visdial_conv
+## visdial_conv [![twitter](https://img.shields.io/twitter/url/https/shields.io.svg?style=social)](https://ctt.ac/rlwuX)
 
 [![Paper](https://img.shields.io/badge/Presented%20at%20-ACL2020-yellow)](https://acl2020.org/program/accepted/)
 [![CodeAMT](https://img.shields.io/badge/code-AMT%20interface-green.svg)](https://github.com/shubhamagarwal92/visdialconv-amt)
