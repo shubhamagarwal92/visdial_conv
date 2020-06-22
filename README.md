@@ -44,6 +44,12 @@ We provide [shell scripts](./shell_scripts) to run our models. To reproduce the 
 - [MCA-I-H-GT](./new_annotations/train_and_evaluate_mcan_img_mcan_hist.sh)
 ( The Python script in the same [new_annotations](./new_annotations) folder shows how we fixed dense gt annotations.)
 
+Example: 
+```
+# Run as:  
+cd shell_scripts
+bash train_and_evaluate_mcan_img_only.sh
+```
 
 We follow the same directory structure as described above in all the shell scripts.   
 
