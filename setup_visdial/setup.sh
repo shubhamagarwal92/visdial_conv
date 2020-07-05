@@ -11,6 +11,8 @@ export MODEL_DIR=$PROJECT_DIR/models
 mkdir -p $DATA_DIR
 mkdir -p $MODEL_DIR
 
+echo "Data directory created at: " "${DATA_DIR}"
+echo "Model directory created at: " "${MODEL_DIR}"
 # Conda env and setup
  conda create -n visdialch python=3.6
  conda activate visdialch
