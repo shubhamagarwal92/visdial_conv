@@ -112,6 +112,7 @@ class CheckpointManager(object):
                 {
                     "model": self._model_state_dict(),
                     "optimizer": self.optimizer.state_dict(),
+                    "epoch": self.last_epoch
                 },
                 self.ckpt_dirpath / f"checkpoint_{self.last_epoch}.pth",
             )
@@ -122,6 +123,25 @@ class CheckpointManager(object):
             return self.model.module.state_dict()
         else:
             return self.model.state_dict()
+
+    def save_best(self, ckpt_name="best"):
+        """Saves only the best checkpoint. """
+
+        #  SA: todo confirm last epoch here
+        torch.save(
+            {
+                "model": self._model_state_dict(),
+                "optimizer": self.optimizer.state_dict(),
+                "epoch": self.last_epoch
+            },
+            self.ckpt_dirpath / f"checkpoint_{ckpt_name}.pth",
+        )
+
+    def update_last_epoch(self, epoch=None):
+        """ Update last epoch"""
+        self.last_epoch = epoch
+        print("Setting the epoch number to {}".format(self.last_epoch))
+        return
 
 
 def load_checkpoint(checkpoint_pthpath):
@@ -176,4 +196,6 @@ def load_checkpoint(checkpoint_pthpath):
 
     # load encoder, decoder, optimizer state_dicts
     components = torch.load(checkpoint_pthpath)
+
+    # SA: todo return last epoch here
     return components["model"], components["optimizer"]
