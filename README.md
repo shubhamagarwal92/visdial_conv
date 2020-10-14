@@ -15,6 +15,8 @@ Alternatively, we provide [setup.sh](/setup_visdial/setup.sh) to streamline the 
 ```
 cd setup_visdial
 bash setup.sh
+
+bash setup_glove.sh
 ```
 
 We follow the directory structure
